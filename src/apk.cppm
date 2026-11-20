@@ -11,8 +11,7 @@
 // SHA-256(0xa5 || length || chunk), and the APK's is
 // SHA-256(0x5a || count || every chunk digest).
 //
-// One signer, one signature: ECDSA P-256 (algorithm 0x0201) or RSA
-// PKCS#1 v1.5 (0x0103), both over SHA-256. Without v1 (JAR) signing, so for
+// One signer, one signature: ECDSA P-256 over SHA-256 (algorithm 0x0201). Without v1 (JAR) signing, so for
 // Android 7.0 and later only: squared's apps need Android 9.
 
 export module apkpack.apk;
@@ -24,7 +23,6 @@ import apkpack.der;
 export namespace apkpack {
 
 inline constexpr std::uint32_t v2_block_id = 0x7109871a;
-inline constexpr std::uint32_t algorithm_rsa_sha256 = 0x0103;
 inline constexpr std::uint32_t algorithm_ecdsa_sha256 = 0x0201;
 inline constexpr std::string_view block_magic = "APK Sig Block 42";
 
@@ -148,22 +146,8 @@ inline std::expected<Bytes, std::string> sign_v2(ByteView apk, const PrivateKey&
     if (!l) return std::unexpected(l.error());
     auto cert_key = certificate_key(certificate);
     if (!cert_key) return std::unexpected("the certificate's public key cannot be read");
-    // The certificate must be the key's.
-    const bool matches = std::visit(
-        [&](const auto& k) -> bool {
-            using K = std::decay_t<decltype(k)>;
-            if constexpr (std::is_same_v<K, EcKey>) {
-                auto c = std::get_if<EcKey>(&cert_key->key);
-                return c && c->point == k.point;
-            } else {
-                auto c = std::get_if<RsaKey>(&cert_key->key);
-                return c && c->n == k.n && c->e == k.e;
-            }
-        },
-        key.key);
-    if (!matches) return std::unexpected("the certificate is not the key's");
-    const bool ec = std::holds_alternative<EcKey>(key.key);
-    const std::uint32_t algorithm = ec ? algorithm_ecdsa_sha256 : algorithm_rsa_sha256;
+    if (cert_key->key.point != key.key.point) return std::unexpected("the certificate is not the key's");
+    const std::uint32_t algorithm = algorithm_ecdsa_sha256;
 
     const auto digest = v2_digest(apk, *l);
     Bytes digests, one, certificates, signed_data;
@@ -176,16 +160,9 @@ inline std::expected<Bytes, std::string> sign_v2(ByteView apk, const PrivateKey&
     detail::put_prefixed(signed_data, {});  // no additional attributes
 
     const auto signed_digest = Sha256::of(signed_data);
-    Bytes signature;
-    if (ec) {
-        auto rs = ec_sign(std::get<EcKey>(key.key), signed_digest);
-        if (!rs) return std::unexpected("ECDSA signing failed");
-        signature = ecdsa_der(*rs);
-    } else {
-        auto s = rsa_sign(std::get<RsaKey>(key.key), signed_digest);
-        if (!s) return std::unexpected("RSA signing failed (a key whose modulus is too small or even)");
-        signature = *s;
-    }
+    auto rs = ec_sign(key.key, signed_digest);
+    if (!rs) return std::unexpected("ECDSA signing failed");
+    const Bytes signature = ecdsa_der(*rs);
     Bytes sig_record, signatures, signer, signers, v2;
     detail::put32(sig_record, algorithm);
     detail::put_prefixed(sig_record, signature);
@@ -248,7 +225,7 @@ inline std::expected<Verified, std::string> verify_v2(ByteView apk) {
     auto signed_data = s.prefixed(), signatures = s.prefixed(), public_key = s.prefixed();
     if (!signed_data || !signatures || !public_key) return std::unexpected("v2: a signer cut short");
     auto key = parse_spki(*public_key);
-    if (!key) return std::unexpected("v2: a public key apkpack cannot read");
+    if (!key) return std::unexpected("v2: a public key apkpack cannot read (it checks ECDSA P-256)");
 
     detail::Reader sigs(*signatures);
     auto sig = sigs.prefixed();
@@ -258,18 +235,10 @@ inline std::expected<Verified, std::string> verify_v2(ByteView apk) {
     auto signature = sig_r.prefixed();
     if (!algorithm || !signature) return std::unexpected("v2: a signature cut short");
     const auto signed_digest = Sha256::of(*signed_data);
-    bool good = false;
-    if (*algorithm == algorithm_ecdsa_sha256) {
-        auto ec = std::get_if<EcKey>(&key->key);
-        auto rs = ecdsa_raw(*signature);
-        good = ec && rs && ec_verify(ec->point, signed_digest, *rs);
-    } else if (*algorithm == algorithm_rsa_sha256) {
-        auto rsa = std::get_if<RsaKey>(&key->key);
-        good = rsa && rsa_verify(*rsa, signed_digest, *signature);
-    } else {
-        return std::unexpected(std::format("v2: signature algorithm {:#06x}, which apkpack does not check", *algorithm));
-    }
-    if (!good) return std::unexpected("v2: the signature does not verify");
+    if (*algorithm != algorithm_ecdsa_sha256)
+        return std::unexpected(std::format("v2: signature algorithm {:#06x}; apkpack checks ECDSA P-256 (0x0201)", *algorithm));
+    auto rs = ecdsa_raw(*signature);
+    if (!rs || !ec_verify(key->key.point, signed_digest, *rs)) return std::unexpected("v2: the signature does not verify");
 
     detail::Reader data(*signed_data);
     auto digests = data.prefixed(), certificates = data.prefixed();

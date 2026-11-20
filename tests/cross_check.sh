@@ -3,13 +3,12 @@
 #
 #   keygen   openssl reads the key and the certificate, and checks the
 #            certificate's self-signature
-#   sign     an ECDSA key of apkpack's, an RSA key of openssl's, and a
-#            keytool debug keystore (as Termux's is), exported to PEM
+#   sign     an ECDSA key of apkpack's; an RSA key refused
 #   verify   apkpack's own, tests/v2check.py (Python's cryptography, where
 #            installed) and apksigner (where on PATH): all three must agree
 #   tamper   one byte changed in a signed APK fails apkpack verify
 #
-# Needs openssl and zip; keytool, python3 with cryptography and apksigner
+# Needs openssl and zip; python3 with cryptography and apksigner
 # are used when present, and their checks are skipped (and said) otherwise.
 set -euo pipefail
 
@@ -59,26 +58,11 @@ check_signed ec.apk "ECDSA P-256"
 "$apkpack" sign ec.pem ec.apk ec-again.apk >/dev/null
 check_signed ec-again.apk "ECDSA, signed twice"
 
-# RSA, made by openssl.
+# An RSA key is refused: apkpack signs with its own ECDSA keys.
 openssl req -x509 -newkey rsa:2048 -nodes -keyout rsa.key -out rsa.crt -days 30 -subj /CN=rsa -sha256 2>/dev/null
 cat rsa.key rsa.crt > rsa.pem
-"$apkpack" sign rsa.pem unsigned.apk rsa.apk >/dev/null
-check_signed rsa.apk "RSA 2048 (openssl)"
-
-# A keytool debug keystore, as Termux's ~/.android/debug.keystore, exported
-# to PEM the way README.md says.
-if command -v keytool >/dev/null 2>&1; then
-    keytool -genkeypair -keystore debug.keystore -storepass android -keypass android -alias androiddebugkey \
-        -keyalg RSA -keysize 2048 -validity 30 -dname "CN=Android Debug,O=Android,C=US" >/dev/null 2>&1
-    keytool -importkeystore -srckeystore debug.keystore -srcstorepass android -srcalias androiddebugkey \
-        -destkeystore debug.p12 -deststoretype PKCS12 -deststorepass android -destkeypass android >/dev/null 2>&1
-    openssl pkcs12 -in debug.p12 -passin pass:android -nodes -out debug.pem 2>/dev/null ||
-        openssl pkcs12 -legacy -in debug.p12 -passin pass:android -nodes -out debug.pem
-    "$apkpack" sign debug.pem unsigned.apk debug.apk >/dev/null
-    check_signed debug.apk "RSA from a keytool debug keystore"
-else
-    skip "keytool debug keystore (no keytool)"
-fi
+"$apkpack" sign rsa.pem unsigned.apk rsa.apk >/dev/null 2>&1 && die "an RSA key was taken"
+ok "RSA key: refused"
 
 # One byte changed in an entry: verify fails.
 cp ec.apk tampered.apk

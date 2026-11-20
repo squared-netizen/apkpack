@@ -2,9 +2,9 @@
 //
 // apkpack.der: the ASN.1 DER, PEM and X.509 that signing needs.
 //
-//   a key file          PEM: a private key (PKCS#8 "PRIVATE KEY", SEC 1
-//                       "EC PRIVATE KEY" or PKCS#1 "RSA PRIVATE KEY") and a
-//                       certificate ("CERTIFICATE"), as openssl writes them
+//   a key file          PEM: an ECDSA P-256 private key (PKCS#8 "PRIVATE
+//                       KEY" or SEC 1 "EC PRIVATE KEY") and a certificate
+//                       ("CERTIFICATE"), as keygen and openssl write them
 //   a certificate       read for its SubjectPublicKeyInfo; made self-signed
 //                       by keygen (ECDSA P-256 with SHA-256, X.509 v3)
 
@@ -218,17 +218,16 @@ inline std::optional<Bytes> unpem(std::string_view text, std::string_view label)
 
 inline constexpr std::string_view oid_ec_public_key = "1.2.840.10045.2.1";
 inline constexpr std::string_view oid_prime256v1 = "1.2.840.10045.3.1.7";
-inline constexpr std::string_view oid_rsa = "1.2.840.113549.1.1.1";
 inline constexpr std::string_view oid_ecdsa_sha256 = "1.2.840.10045.4.3.2";
 
-/// A signing key: ECDSA P-256 or RSA.
+/// A signing key: ECDSA P-256.
 struct PrivateKey {
-    std::variant<EcKey, RsaKey> key;
+    EcKey key;
 };
 
 /// A public key, from a SubjectPublicKeyInfo.
 struct PublicKey {
-    std::variant<EcKey, RsaKey> key;
+    EcKey key;
     Bytes spki;  // the SubjectPublicKeyInfo, DER
 };
 
@@ -256,15 +255,7 @@ inline std::optional<PublicKey> parse_spki(ByteView spki) {
         out.key = ec;
         return out;
     }
-    if (der::is_oid((*alg)[0], oid_rsa)) {
-        auto rsa = der::read(key_bits);
-        if (!rsa) return std::nullopt;
-        auto ne = der::children(*rsa);
-        if (!ne || ne->size() < 2) return std::nullopt;
-        out.key = RsaKey{der::unsigned_of((*ne)[0]), der::unsigned_of((*ne)[1]), {}};
-        return out;
-    }
-    return std::nullopt;
+    return std::nullopt;  // RSA and the rest: apkpack signs with ECDSA P-256 only
 }
 
 /// A certificate's SubjectPublicKeyInfo (tbsCertificate's seventh field, or
@@ -295,16 +286,9 @@ inline std::optional<PrivateKey> parse_ec_private(ByteView sec1) {
     return PrivateKey{ec};
 }
 
-inline std::optional<PrivateKey> parse_rsa_private(ByteView pkcs1) {
-    auto top = der::read(pkcs1);
-    if (!top) return std::nullopt;
-    auto parts = der::children(*top);
-    if (!parts || parts->size() < 4) return std::nullopt;
-    return PrivateKey{RsaKey{der::unsigned_of((*parts)[1]), der::unsigned_of((*parts)[2]), der::unsigned_of((*parts)[3])}};
-}
-
-/// The private key in a PEM text: PKCS#8, SEC 1 or PKCS#1. An encrypted
-/// key is refused (openssl pkey -in KEY -out PLAIN takes the password off).
+/// The ECDSA P-256 private key in a PEM text: PKCS#8 or SEC 1. An encrypted
+/// key is refused (openssl pkey -in KEY -out PLAIN takes the password off),
+/// and so is an RSA key.
 inline std::expected<PrivateKey, std::string> parse_private_key(std::string_view text) {
     if (text.find("ENCRYPTED PRIVATE KEY") != std::string_view::npos)
         return std::unexpected("the key is encrypted: openssl pkey -in KEY -out PLAIN.pem takes the password off");
@@ -312,12 +296,9 @@ inline std::expected<PrivateKey, std::string> parse_private_key(std::string_view
         if (auto k = parse_ec_private(*sec1)) return *k;
         return std::unexpected("EC PRIVATE KEY: not a P-256 key apkpack can read");
     }
-    if (auto pkcs1 = unpem(text, "RSA PRIVATE KEY")) {
-        if (auto k = parse_rsa_private(*pkcs1)) return *k;
-        return std::unexpected("RSA PRIVATE KEY: not a key apkpack can read");
-    }
+    if (unpem(text, "RSA PRIVATE KEY")) return std::unexpected("an RSA key: apkpack signs with ECDSA P-256 keys (apkpack keygen)");
     auto pkcs8 = unpem(text, "PRIVATE KEY");
-    if (!pkcs8) return std::unexpected("no private key (PEM: PRIVATE KEY, EC PRIVATE KEY or RSA PRIVATE KEY)");
+    if (!pkcs8) return std::unexpected("no private key (PEM: PRIVATE KEY or EC PRIVATE KEY)");
     auto top = der::read(*pkcs8);
     auto parts = top ? der::children(*top) : std::nullopt;
     if (!parts || parts->size() < 3 || (*parts)[2].tag != 0x04) return std::unexpected("PRIVATE KEY: not PKCS#8");
@@ -328,11 +309,7 @@ inline std::expected<PrivateKey, std::string> parse_private_key(std::string_view
         if (auto k = parse_ec_private((*parts)[2].content)) return *k;
         return std::unexpected("PRIVATE KEY: an EC key apkpack cannot read");
     }
-    if (der::is_oid((*alg)[0], oid_rsa)) {
-        if (auto k = parse_rsa_private((*parts)[2].content)) return *k;
-        return std::unexpected("PRIVATE KEY: an RSA key apkpack cannot read");
-    }
-    return std::unexpected("PRIVATE KEY: neither EC P-256 nor RSA");
+    return std::unexpected("PRIVATE KEY: not an ECDSA P-256 key (apkpack keygen makes one)");
 }
 
 inline Bytes pkcs8_of(const EcKey& ec) {

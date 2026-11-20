@@ -12,7 +12,7 @@ CC       ?= clang
 BUILD    ?= build
 OPT      ?= -O2 -g
 STDLIB   := -stdlib=libc++
-WARN     := -Wall -Wextra -Wpedantic -Wconversion -Wno-sign-conversion
+WARN     := -Wall -Wextra -Wpedantic -Wconversion -Wno-sign-conversion -Wno-missing-field-initializers
 CXXFLAGS := -std=c++23 $(STDLIB) $(OPT) $(WARN) -fprebuilt-module-path=$(BUILD)/pcm -fmodule-file=std=$(BUILD)/pcm/std.pcm
 UECC     := -DuECC_SUPPORTS_secp160r1=0 -DuECC_SUPPORTS_secp192r1=0 -DuECC_SUPPORTS_secp224r1=0 \
             -DuECC_SUPPORTS_secp256r1=1 -DuECC_SUPPORTS_secp256k1=0
@@ -23,7 +23,7 @@ STD_MANIFEST := $(shell readlink -f "$$($(CXX) $(STDLIB) -print-library-module-m
 STD_SOURCE   := $(if $(STD_MANIFEST),$(shell sed -n 's/.*"source-path": *"\([^"]*std\.cppm\)".*/\1/p' $(STD_MANIFEST) 2>/dev/null | head -n 1))
 STD_CPPM     ?= $(if $(filter /%,$(STD_SOURCE)),$(STD_SOURCE),$(if $(STD_SOURCE),$(dir $(STD_MANIFEST))$(STD_SOURCE)))
 
-MODULES := crypto der apk
+MODULES := crypto der apk zip res link
 OBJS    := $(BUILD)/obj/std.o $(BUILD)/obj/uECC.o $(MODULES:%=$(BUILD)/obj/%.o)
 TESTS   := $(patsubst tests/%.cpp,$(BUILD)/%,$(wildcard tests/test_*.cpp))
 
@@ -45,11 +45,14 @@ $(BUILD)/obj/uECC.o: third_party/micro-ecc/uECC.c
 define unit
 $(BUILD)/pcm/apkpack.$(1).pcm $(BUILD)/obj/$(1).o &: src/$(1).cppm $(BUILD)/pcm/std.pcm $(2)
 	@mkdir -p $(BUILD)/pcm $(BUILD)/obj
-	$(CXX) $(CXXFLAGS) $(UECC) -Ithird_party/micro-ecc -c $$< -fmodule-output=$(BUILD)/pcm/apkpack.$(1).pcm -o $(BUILD)/obj/$(1).o
+	$(CXX) $(CXXFLAGS) $(UECC) -Ithird_party/micro-ecc -Isrc -c $$< -fmodule-output=$(BUILD)/pcm/apkpack.$(1).pcm -o $(BUILD)/obj/$(1).o
 endef
 $(eval $(call unit,crypto,))
 $(eval $(call unit,der,$(BUILD)/pcm/apkpack.crypto.pcm))
 $(eval $(call unit,apk,$(BUILD)/pcm/apkpack.crypto.pcm $(BUILD)/pcm/apkpack.der.pcm))
+$(eval $(call unit,zip,$(BUILD)/pcm/apkpack.crypto.pcm))
+$(eval $(call unit,res,$(BUILD)/pcm/apkpack.crypto.pcm src/android_table.inc))
+$(eval $(call unit,link,$(BUILD)/pcm/apkpack.crypto.pcm $(BUILD)/pcm/apkpack.res.pcm $(BUILD)/pcm/apkpack.zip.pcm))
 
 $(BUILD)/apkpack: tools/apkpack.cpp $(OBJS)
 	$(CXX) $(CXXFLAGS) $< $(OBJS) $(LDFLAGS) -o $@
@@ -62,6 +65,7 @@ $(BUILD)/test_%: tests/test_%.cpp $(OBJS)
 test: all
 	@set -e; for t in $(TESTS); do $$t; done; echo "all tests passed"
 	@bash tests/cross_check.sh $(BUILD)/apkpack
+	@bash tests/link_check.sh $(BUILD)/apkpack
 
 clean:
 	rm -r -f -- build
