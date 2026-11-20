@@ -139,7 +139,7 @@ inline std::expected<XmlNode, std::string> prepare_manifest(XmlNode root, const 
     if (sdk == root.children.end()) {
         XmlNode n;
         n.name = "uses-sdk";
-        n.line = root.line;
+        n.line = 0;  // made by the build, as aapt2 marks one
         root.children.insert(root.children.begin(), n);
         sdk = root.children.begin();
     }
