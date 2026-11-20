@@ -182,6 +182,7 @@ inline std::expected<Bytes, std::string> link(const LinkOptions& o) {
         if (!config) return std::unexpected("res/" + folder + ": " + config.error());
         if (type == "values" && config->sdk == 0 && (config->ui_mode != 0 || (config->density != 0 && config->density != 0xffff)))
             config->sdk = config->ui_mode != 0 ? 8 : 4;
+        if (type == "values" && config->sdk <= o.min_sdk) config->sdk = 0;
         if (type == "values") {
             auto text = read_text(o.res / rel);
             if (!text) return std::unexpected("cannot read res/" + rel.string());
@@ -212,6 +213,9 @@ inline std::expected<Bytes, std::string> link(const LinkOptions& o) {
         }
         const std::string entry = file.substr(0, file.find('.'));
         const std::string path = "res/" + out_folder + "/" + file;
+        // A version the app's minimum already meets says nothing on the
+        // device: aapt2 drops it from the table (not from the file's path).
+        if (config->sdk <= o.min_sdk) config->sdk = 0;
         table.types[type][entry].push_back(ResourceValue{*config, {}, {}, path, Value{t_string, 0, path}});
         if (file.ends_with(".xml") && type != "raw") {
             auto text = read_text(o.res / rel);
