@@ -11,10 +11,18 @@
 //                                KEY (PEM: a private key, EC P-256 or RSA,
 //                                and its certificate), written to OUT
 //   apkpack verify APK           its v2 signature checked; the signer printed
+//   apkpack link -o OUT.apk --manifest FILE [--res DIR] [--assets DIR]
+//                [--min-sdk N] [--target-sdk N] [--debuggable]
+//                                an unsigned APK: the manifest and res/
+//                                compiled, assets/ added (aapt2 compile and
+//                                link, with no android.jar)
+//   apkpack add APK [-C DIR] FILE...
+//                                files added to (or replaced in) APK, stored
+//                                and aligned (zip and zipalign); its old
+//                                signature dropped
+//   apkpack dump APK [ENTRY]     a binary XML entry as text (the manifest
+//                                when ENTRY is left out)
 //   apkpack --help | --version
-//
-// Phase 1 of apkpack's plan (README.md): the build no longer needs keytool
-// or apksigner, so no Java.
 
 #include <stdio.h>  // stdout, stderr (macros, not in the std module)
 
@@ -22,17 +30,24 @@ import std;
 import apkpack.crypto;
 import apkpack.der;
 import apkpack.apk;
+import apkpack.zip;
+import apkpack.res;
+import apkpack.link;
 
 using namespace apkpack;
 
 namespace {
 
-constexpr std::string_view version = "0.1.0";
+constexpr std::string_view version = "0.2.0";
 
 int usage(std::FILE* out = stderr, int status = 2) {
     std::println(out, "usage: apkpack keygen KEY [--name NAME] [--years N]\n"
                       "       apkpack sign KEY IN.apk OUT.apk\n"
                       "       apkpack verify APK\n"
+                      "       apkpack link -o OUT.apk --manifest FILE [--res DIR] [--assets DIR]\n"
+                      "                    [--min-sdk N] [--target-sdk N] [--debuggable]\n"
+                      "       apkpack add APK [-C DIR] FILE...\n"
+                      "       apkpack dump APK [ENTRY]\n"
                       "       apkpack --help | --version");
     return status;
 }
@@ -132,6 +147,93 @@ int verify(const std::vector<std::string_view>& args) {
     return 0;
 }
 
+std::optional<int> number(std::string_view v) {
+    int n = 0;
+    if (v.empty() || std::from_chars(v.data(), v.data() + v.size(), n).ptr != v.data() + v.size()) return std::nullopt;
+    return n;
+}
+
+int link_cmd(const std::vector<std::string_view>& args) {
+    LinkOptions o;
+    std::string out;
+    for (std::size_t i = 0; i < args.size(); ++i) {
+        const std::string_view a = args[i];
+        const bool has_value = i + 1 < args.size();
+        if (a == "--debuggable") {
+            o.debuggable = true;
+        } else if (a == "-o" && has_value) {
+            out = args[++i];
+        } else if (a == "--manifest" && has_value) {
+            o.manifest = args[++i];
+        } else if (a == "--res" && has_value) {
+            o.res = args[++i];
+        } else if (a == "--assets" && has_value) {
+            o.assets = args[++i];
+        } else if ((a == "--min-sdk" || a == "--target-sdk") && has_value) {
+            auto n = number(args[++i]);
+            if (!n) return fail(std::format("{}: a number", a));
+            (a == "--min-sdk" ? o.min_sdk : o.target_sdk) = *n;
+        } else {
+            return usage();
+        }
+    }
+    if (out.empty() || o.manifest.empty()) return usage();
+    auto apk = link(o);
+    if (!apk) return fail(apk.error());
+    if (!write_file(out, *apk, std::filesystem::perms::owner_read | std::filesystem::perms::owner_write | std::filesystem::perms::group_read |
+                                   std::filesystem::perms::others_read))
+        return fail("cannot write " + out);
+    std::println("{}: linked ({} bytes, unsigned)", out, apk->size());
+    return 0;
+}
+
+int add_cmd(const std::vector<std::string_view>& args) {
+    if (args.size() < 2) return usage();
+    const std::string apk_path(args[0]);
+    std::filesystem::path dir = ".";
+    std::vector<std::string> names;
+    for (std::size_t i = 1; i < args.size(); ++i) {
+        if (args[i] == "-C" && i + 1 < args.size()) dir = args[++i];
+        else names.emplace_back(args[i]);
+    }
+    if (names.empty()) return usage();
+    auto apk = read_file(apk_path);
+    if (!apk) return fail("cannot read " + apk_path);
+    auto entries = read_zip(*apk);
+    if (!entries) return fail(apk_path + ": " + entries.error());
+    for (const std::string& name : names) {
+        auto data = read_file((dir / name).string());
+        if (!data) return fail("cannot read " + (dir / name).string());
+        put_entry(*entries, std::filesystem::path(name).generic_string(), std::move(*data));
+    }
+    const Bytes out = write_zip(*entries);
+    if (!write_file(apk_path, out, std::filesystem::perms::owner_read | std::filesystem::perms::owner_write |
+                                       std::filesystem::perms::group_read | std::filesystem::perms::others_read))
+        return fail("cannot write " + apk_path);
+    std::println("{}: {} added ({} entries, unsigned)", apk_path, names.size(), entries->size());
+    return 0;
+}
+
+int dump_cmd(const std::vector<std::string_view>& args) {
+    if (args.empty() || args.size() > 2) return usage();
+    auto apk = read_file(std::string(args[0]));
+    if (!apk) return fail(std::format("cannot read {}", args[0]));
+    auto entries = read_zip(*apk);
+    if (!entries) return fail(std::format("{}: {}", args[0], entries.error()));
+    const std::string_view want = args.size() == 2 ? args[1] : "AndroidManifest.xml";
+    for (const ZipEntry& e : *entries) {
+        if (e.name != want) continue;
+        if (e.method != 0) return fail(std::format("{}: compressed; apkpack dump reads stored entries", want));
+        const ByteView raw = *e.raw_local;
+        const std::size_t start = 30 + (raw[26] | raw[27] << 8) + (raw[28] | raw[29] << 8);
+        auto text = dump_xml(raw.subspan(start, e.size));
+        if (!text) return fail(std::format("{}: {}", want, text.error()));
+        std::print("{}", *text);
+        return 0;
+    }
+    return fail(std::format("{}: no entry {}", args[0], want));
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -147,6 +249,9 @@ int main(int argc, char** argv) {
     if (cmd == "keygen") return keygen(args);
     if (cmd == "sign") return sign(args);
     if (cmd == "verify") return verify(args);
+    if (cmd == "link") return link_cmd(args);
+    if (cmd == "add") return add_cmd(args);
+    if (cmd == "dump") return dump_cmd(args);
     std::println(stderr, "apkpack: unknown command '{}'", cmd);
     return usage();
 }
