@@ -1,6 +1,6 @@
 # Builds apkpack with clang and libc++ 23 (the SDK's toolchain, from
 # apt.llvm.org) and runs make test: the unit tests, and the cross-checks
-# against openssl, keytool, Python's cryptography and the Android SDK's
+# against openssl, Python's cryptography, the Android SDK's aapt2 and
 # apksigner, which must accept every APK apkpack signs.
 name: test
 

@@ -13,7 +13,7 @@ One program with subcommands, so the build can move to it a step at a time:
 
 | Command | Replaces | Does |
 | --- | --- | --- |
-| `apkpack keygen` | keytool | an ECDSA P-256 key and a self-signed certificate; an existing debug key can be imported |
+| `apkpack keygen` | keytool | an ECDSA P-256 key and a self-signed certificate |
 | `apkpack sign`, `apkpack verify` | apksigner | APK Signature Scheme v2 (Android 7.0 and later) |
 | `apkpack add` | zip, zipalign | lib/ and classes.dex, stored entries aligned (4 bytes, 16 KB for a stored .so) |
 | `apkpack link` | aapt2, android.jar | the manifest and XML resources as binary XML, resources.arsc, assets |
