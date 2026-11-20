@@ -51,21 +51,13 @@ and they must agree on everything Android reads.
 an app signed by apkpack needs Android 7.0 or later. squared's apps need
 Android 9.
 
-**Keep your existing key.** Android refuses an update signed with another
-key, unless you uninstall first, which deletes the app's files. An app
-already installed from Termux's build was signed with its debug keystore
-(RSA). Export that key once, and apkpack signs with it:
+**A new key, a new install.** apkpack signs with ECDSA P-256 keys it makes,
+not with an older key (decided 2026-11-20). Android refuses an update
+signed with another key, so an app installed from an older build (Termux's
+debug keystore) is uninstalled once and installed again.
 
-```sh
-keytool -importkeystore -srckeystore ~/.android/debug.keystore -srcstorepass android \
-        -srcalias androiddebugkey -destkeystore debug.p12 -deststoretype PKCS12 \
-        -deststorepass android -destkeypass android
-openssl pkcs12 -in debug.p12 -passin pass:android -nodes -out ~/.android/apkpack.pem
-rm debug.p12
-```
-
-A key file is PEM: a private key (EC P-256 or RSA, as PKCS#8, SEC 1 or
-PKCS#1, not encrypted) and its certificate. `make test` checks every APK
+A key file is PEM: an ECDSA P-256 private key (PKCS#8 or SEC 1, not
+encrypted) and its certificate, as `keygen` writes it. `make test` checks every APK
 apkpack signs with its own `verify`, an independent checker on Python's
 cryptography (`tests/v2check.py`) and, where it is on PATH, the Android
 SDK's `apksigner`.

@@ -8,8 +8,8 @@
 //                                PEM file; an existing one is never replaced
 //   apkpack sign KEY IN.apk OUT.apk
 //                                IN signed with APK Signature Scheme v2 by
-//                                KEY (PEM: a private key, EC P-256 or RSA,
-//                                and its certificate), written to OUT
+//                                KEY (PEM: an ECDSA P-256 private key and
+//                                its certificate, as keygen writes), to OUT
 //   apkpack verify APK           its v2 signature checked; the signer printed
 //   apkpack link -o OUT.apk --manifest FILE [--res DIR] [--assets DIR]
 //                [--min-sdk N] [--target-sdk N] [--debuggable]
@@ -131,8 +131,7 @@ int sign(const std::vector<std::string_view>& args) {
                     std::filesystem::perms::owner_read | std::filesystem::perms::owner_write | std::filesystem::perms::group_read |
                         std::filesystem::perms::others_read))
         return fail(std::format("cannot write {}", args[2]));
-    std::println("{}: signed (v2, {}), certificate SHA-256 {}", args[2], std::holds_alternative<EcKey>(key->key) ? "ECDSA P-256" : "RSA",
-                 fingerprint(*cert));
+    std::println("{}: signed (v2, ECDSA P-256), certificate SHA-256 {}", args[2], fingerprint(*cert));
     return 0;
 }
 
@@ -142,8 +141,7 @@ int verify(const std::vector<std::string_view>& args) {
     if (!apk) return fail(std::format("cannot read {}", args[0]));
     auto v = verify_v2(*apk);
     if (!v) return fail(std::format("{}: {}", args[0], v.error()));
-    std::println("{}: verified (v2, {}), certificate SHA-256 {}", args[0], v->algorithm == algorithm_ecdsa_sha256 ? "ECDSA P-256" : "RSA",
-                 fingerprint(v->certificate));
+    std::println("{}: verified (v2, ECDSA P-256), certificate SHA-256 {}", args[0], fingerprint(v->certificate));
     return 0;
 }
 
