@@ -8,7 +8,10 @@
 //                         android:debuggable="true" on <application>
 //   resources.arsc        the app's resources (apkpack.res)
 //   res/...               XML compiled, anything else as it is
-//   assets/...            as they are
+//   assets/...            as they are: every file, hidden ones and folders
+//                         starting with _ too (aapt2 left those out without
+//                         a word); and squared's asset index
+//                         (assets/SQ-INF/index) checked against them
 //
 // Every entry is stored (apkpack.zip). The output is the same bytes for the
 // same inputs.
@@ -35,21 +38,52 @@ inline std::optional<std::string> read_text(const std::filesystem::path& p) {
     return std::string(std::istreambuf_iterator<char>(in), {});
 }
 
-/// The files under `dir`, relative, sorted, hidden ones left out (as aapt2
-/// leaves them out).
-inline std::vector<std::filesystem::path> files_under(const std::filesystem::path& dir) {
-    std::vector<std::filesystem::path> out;
+/// The files under `dir`, relative, sorted byte by byte (as LC_ALL=C sort
+/// sorts squared's asset index). Hidden ones are left out only where
+/// `hidden` is false (res/, as aapt2 did: an editor's leftovers); assets/
+/// takes every file, so nothing the app asks for is missing without a word.
+/// A link to a file is followed; a link to a folder is not.
+inline std::vector<std::string> files_under(const std::filesystem::path& dir, bool hidden) {
+    std::vector<std::string> out;
     if (dir.empty() || !std::filesystem::is_directory(dir)) return out;
     for (auto it = std::filesystem::recursive_directory_iterator(dir); it != std::filesystem::recursive_directory_iterator(); ++it) {
         const std::string name = it->path().filename().string();
-        if (name.starts_with(".")) {
+        if (!hidden && name.starts_with(".")) {
             if (it->is_directory()) it.disable_recursion_pending();
             continue;
         }
-        if (it->is_regular_file()) out.push_back(std::filesystem::relative(it->path(), dir));
+        if (it->is_regular_file()) out.push_back(std::filesystem::relative(it->path(), dir).generic_string());
     }
     std::ranges::sort(out);
     return out;
+}
+
+/// squared's asset index (assets/SQ-INF/index: every asset's path, one a
+/// line, SQ-INF/ left out) against the files packed. A path it lists that
+/// is not packed, or a file packed it does not list, fails the link: the
+/// app would look for one and not find it, or never see the other.
+inline std::expected<void, std::string> check_asset_index(const std::filesystem::path& assets, const std::vector<std::string>& files) {
+    const auto index_path = assets / "SQ-INF" / "index";
+    if (!std::filesystem::exists(index_path)) return {};
+    auto text = read_text(index_path);
+    if (!text) return std::unexpected("cannot read " + index_path.string());
+    std::set<std::string> listed, packed;
+    for (auto line : *text | std::views::split('\n')) {
+        std::string_view l(line.begin(), line.end());
+        if (l.ends_with('\r')) l.remove_suffix(1);
+        if (!l.empty()) listed.emplace(l);
+    }
+    for (const std::string& f : files)
+        if (!f.starts_with("SQ-INF/")) packed.insert(f);
+    std::vector<std::string> missing, unlisted;
+    std::ranges::set_difference(listed, packed, std::back_inserter(missing));
+    std::ranges::set_difference(packed, listed, std::back_inserter(unlisted));
+    if (missing.empty() && unlisted.empty()) return {};
+    std::string why = "assets/SQ-INF/index does not match assets/ (make writes it again; is it stale?):";
+    for (std::size_t i = 0; i < missing.size() && i < 5; ++i) why += "\n  listed, not in assets/: " + missing[i];
+    for (std::size_t i = 0; i < unlisted.size() && i < 5; ++i) why += "\n  in assets/, not listed: " + unlisted[i];
+    if (missing.size() + unlisted.size() > 10) why += std::format("\n  ({} differences in all)", missing.size() + unlisted.size());
+    return std::unexpected(why);
 }
 
 /// A <string>'s text as Android reads it: surrounding quotes kept text as
@@ -137,9 +171,10 @@ inline std::expected<Bytes, std::string> link(const LinkOptions& o) {
     };
     std::vector<XmlFile> xml_files;
     std::vector<std::pair<std::string, std::filesystem::path>> plain_files;
-    for (const auto& rel : files_under(o.res)) {
-        if (rel.has_parent_path() && rel.parent_path().has_parent_path())
-            return std::unexpected("res/" + rel.string() + ": res/ holds folders of files, one deep");
+    for (const std::string& rel_text : files_under(o.res, false)) {
+        const std::filesystem::path rel(rel_text);
+        if (!rel.has_parent_path() || rel.parent_path().has_parent_path())
+            return std::unexpected("res/" + rel_text + ": res/ holds folders of files, one deep");
         const std::string folder = rel.parent_path().string(), file = rel.filename().string();
         const std::size_t dash = folder.find('-');
         const std::string type = folder.substr(0, dash);
@@ -260,10 +295,12 @@ inline std::expected<Bytes, std::string> link(const LinkOptions& o) {
     }
     std::ranges::sort(res_entries, {}, &ZipEntry::name);
     for (ZipEntry& e : res_entries) entries.push_back(std::move(e));
-    for (const auto& rel : files_under(o.assets)) {
+    const std::vector<std::string> assets = files_under(o.assets, true);
+    if (auto checked = check_asset_index(o.assets, assets); !checked) return std::unexpected(checked.error());
+    for (const std::string& rel : assets) {
         auto data = read_text(o.assets / rel);
         if (!data) return std::unexpected("cannot read " + (o.assets / rel).string());
-        entries.push_back(ZipEntry{"assets/" + rel.generic_string(), Bytes(data->begin(), data->end())});
+        entries.push_back(ZipEntry{"assets/" + rel, Bytes(data->begin(), data->end())});
     }
     return write_zip(entries);
 }

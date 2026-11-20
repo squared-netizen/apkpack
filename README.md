@@ -44,7 +44,10 @@ night, land/port and language qualifiers. Every `android:` attribute is
 typed from Android's own table of public attributes, generated from AOSP
 (`tools/gen_android_table.py`, `NOTICE.android`), so no android.jar. Every
 entry is stored, and aligned as zipalign aligns it (4 bytes; 16384 for a
-`.so`). `make test` builds a test app with apkpack and, on CI, with aapt2,
+`.so`). `assets/` goes in whole: every file, hidden ones and folders
+starting with `_` too, which aapt2 left out without a word. When squared's
+asset index (`assets/SQ-INF/index`) is there, `link` checks it against the
+files and fails, naming each difference, when they disagree. `make test` builds a test app with apkpack and, on CI, with aapt2,
 and they must agree on everything Android reads.
 
 `sign` writes only a v2 signature, which Android 7.0 and later check, so

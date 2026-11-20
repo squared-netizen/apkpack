@@ -50,6 +50,65 @@ for i in z.infolist():
 PY
 ok "entries aligned (4; 16384 for .so)"
 
+# assets/ as squared's apps lay it out: folders in folders (fonts/, skins/
+# default/raw/, packages/), stored archives, a hidden file and a folder
+# starting with _ (both of which aapt2 dropped without a word), an empty
+# folder, a name with a space; and the index, written the way the build
+# writes it (mk/squared_android_package.mk). Every file must reach the APK,
+# byte for byte, stored.
+mkdir -p assets/fonts assets/skins/default/raw assets/packages assets/_private assets/empty "assets/with space"
+head -c 300000 /dev/urandom > assets/fonts/Mono-Regular.ttf
+printf '{"skin": "default"}\n' > assets/skins/default/raw/pack.json
+head -c 2000000 /dev/urandom > assets/packages/zsh-5.9.2-0123456789abcdef.sq
+printf 'sqterm packages 1\n' > assets/packages/index
+printf 'set -o vi\n' > assets/.zshrc
+printf 'kept\n' > assets/_private/note.txt
+printf 'spaced\n' > "assets/with space/file.txt"
+write_index() {
+    mkdir -p assets/SQ-INF
+    (cd assets && find . -type f ! -path './SQ-INF/*' | sed 's|^\./||' | LC_ALL=C sort) > assets/SQ-INF/index
+}
+write_index
+"$apkpack" link -o assets.apk --manifest "$app/AndroidManifest.xml" --res "$app/res" --assets assets >/dev/null || die "link refused the assets"
+python3 - assets.apk assets <<'PY'
+import os, sys, zipfile
+z = zipfile.ZipFile(sys.argv[1])
+names = {i.filename: i for i in z.infolist() if i.filename.startswith("assets/")}
+on_disk = []
+for root, dirs, files in os.walk(sys.argv[2]):
+    for f in files:
+        on_disk.append(os.path.relpath(os.path.join(root, f), sys.argv[2]))
+for rel in on_disk:
+    i = names.get("assets/" + rel)
+    if i is None:
+        sys.exit(f"assets/{rel} is not in the APK")
+    if i.compress_type != 0:
+        sys.exit(f"assets/{rel} is compressed")
+    if z.read(i) != open(os.path.join(sys.argv[2], rel), "rb").read():
+        sys.exit(f"assets/{rel} differs")
+if len(names) != len(on_disk):
+    sys.exit(f"{len(names)} assets in the APK, {len(on_disk)} on disk")
+PY
+ok "assets: every file (hidden, _folder, spaced, archives), stored, byte for byte; the index checked"
+
+# A stale index fails the link, saying what differs.
+printf 'gone.txt\n' >> assets/SQ-INF/index
+if "$apkpack" link -o stale.apk --manifest "$app/AndroidManifest.xml" --res "$app/res" --assets assets 2> stale.err >/dev/null; then
+    die "a stale index was accepted"
+fi
+grep -q 'listed, not in assets/: gone.txt' stale.err || die "the stale index's message: $(cat stale.err)"
+write_index
+printf 'new\n' > assets/fonts/added.txt
+"$apkpack" link -o stale.apk --manifest "$app/AndroidManifest.xml" --res "$app/res" --assets assets 2> stale.err >/dev/null && die "an unlisted asset was accepted"
+grep -q 'in assets/, not listed: fonts/added.txt' stale.err || die "the unlisted asset's message: $(cat stale.err)"
+ok "assets: a stale index refused, naming the difference"
+
+# No assets/ folder, or an empty one: nothing to add, no error.
+mkdir -p none
+"$apkpack" link -o none.apk --manifest "$app/AndroidManifest.xml" --res "$app/res" --assets none >/dev/null || die "an empty assets/ refused"
+"$apkpack" link -o none.apk --manifest "$app/AndroidManifest.xml" --res "$app/res" --assets missing >/dev/null || die "a missing assets/ refused"
+ok "assets: an empty or missing folder is fine"
+
 jar=$(ls -d "${ANDROID_HOME:-/nonexistent}"/platforms/android-*/android.jar 2>/dev/null | sort -V | tail -n 1 || true)
 if ! command -v aapt2 >/dev/null 2>&1 || [ -z "$jar" ]; then
     skip "aapt2 comparison (no aapt2 or android.jar; CI has both)"
