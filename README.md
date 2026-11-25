@@ -27,7 +27,7 @@ dexgen writes squared's shims, and apkpack packs them.
 ## Using it
 
 ```sh
-make CXX=clang++                          # clang and libc++ 23; make test checks it
+CXX=clang++ sqmake                        # clang and libc++ 23 (build.lua); sqmake test checks it
 apkpack keygen ~/.android/apkpack.pem     # a new ECDSA P-256 key and certificate
 apkpack sign KEY unsigned.apk app.apk     # APK Signature Scheme v2
 apkpack verify app.apk                    # the signature checked, the signer printed
@@ -47,7 +47,7 @@ entry is stored, and aligned as zipalign aligns it (4 bytes; 16384 for a
 `.so`). `assets/` goes in whole: every file, hidden ones and folders
 starting with `_` too, which aapt2 left out without a word. When squared's
 asset index (`assets/SQ-INF/index`) is there, `link` checks it against the
-files and fails, naming each difference, when they disagree. `make test` builds a test app with apkpack and, on CI, with aapt2,
+files and fails, naming each difference, when they disagree. `sqmake test` builds a test app with apkpack and, on CI, with aapt2,
 and they must agree on everything Android reads.
 
 `sign` writes only a v2 signature, which Android 7.0 and later check, so
@@ -60,7 +60,7 @@ signed with another key, so an app installed from an older build (Termux's
 debug keystore) is uninstalled once and installed again.
 
 A key file is PEM: an ECDSA P-256 private key (PKCS#8 or SEC 1, not
-encrypted) and its certificate, as `keygen` writes it. `make test` checks every APK
+encrypted) and its certificate, as `keygen` writes it. `sqmake test` checks every APK
 apkpack signs with its own `verify`, an independent checker on Python's
 cryptography (`tests/v2check.py`) and, where it is on PATH, the Android
 SDK's `apksigner`.
