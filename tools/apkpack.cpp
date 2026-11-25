@@ -38,7 +38,7 @@ using namespace apkpack;
 
 namespace {
 
-constexpr std::string_view version = "0.2.0";
+constexpr std::string_view version = "0.2.1";
 
 int usage(std::FILE* out = stderr, int status = 2) {
     std::println(out, "usage: apkpack keygen KEY [--name NAME] [--years N]\n"
